@@ -1,0 +1,176 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from scipy import stats
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+np.random.seed(42)
+
+days = 180
+dates = pd.date_range("2026-01-01", periods=days, freq="D")
+products = {
+    "Croissant": {"base": 42, "price": 55, "waste_rate": 0.08},
+    "Muffin": {"base": 35, "price": 40, "waste_rate": 0.07},
+    "Donut": {"base": 50, "price": 30, "waste_rate": 0.10}
+}
+
+rows = []
+for i, date in enumerate(dates):
+    weekend = int(date.dayofweek >= 5)
+    promotion = int(i % 30 in range(10, 15))
+    trend = 1 + 0.0015 * i
+    for product, info in products.items():
+        seasonal = 1.18 if weekend else 1.0
+        promo_effect = 1.22 if promotion else 1.0
+        mean_demand = info["base"] * seasonal * promo_effect * trend
+        sold = max(0, int(np.random.poisson(mean_demand)))
+        prepared = int(np.ceil(mean_demand * (1.12 + info["waste_rate"])))
+        wasted = max(0, prepared - sold)
+        rows.append({
+            "Date": date,
+            "Product": product,
+            "Weekday": date.day_name(),
+            "Weekend": weekend,
+            "Promotion": promotion,
+            "Units_Sold": sold,
+            "Units_Prepared": prepared,
+            "Units_Wasted": wasted,
+            "Price": info["price"],
+            "Revenue": sold * info["price"]
+        })
+
+df = pd.DataFrame(rows)
+df.to_csv("bakery_sales_data.csv", index=False)
+
+print("=" * 64)
+print("BAKERY DEMAND FORECASTING AND PRODUCT QUALITY ANALYSIS SYSTEM")
+print("=" * 64)
+print("\n1. DATASET OVERVIEW")
+print(f"Records: {len(df)} | Dates: {df['Date'].nunique()} | Products: {df['Product'].nunique()}")
+print(df.head(6).to_string(index=False))
+
+print("\n2. PRODUCT SALES SUMMARY")
+summary = df.groupby("Product").agg(
+    Average_Daily_Sales=("Units_Sold", "mean"),
+    Std_Dev=("Units_Sold", "std"),
+    Total_Sales=("Units_Sold", "sum"),
+    Total_Revenue=("Revenue", "sum"),
+    Total_Wasted=("Units_Wasted", "sum")
+).round(2)
+print(summary.to_string())
+
+print("\n3. PROBABILITY DISTRIBUTION")
+for product in products:
+    values = df.loc[df["Product"] == product, "Units_Sold"]
+    print(f"{product}: mean={values.mean():.2f}, variance={values.var():.2f}, P(sales >= 50)={(values >= 50).mean():.3f}")
+
+print("\n4. SAMPLING DISTRIBUTION")
+croissant = df.loc[df["Product"] == "Croissant", "Units_Sold"].to_numpy()
+sample_means = [np.mean(np.random.choice(croissant, size=20, replace=True)) for _ in range(1000)]
+print(f"Croissant population mean: {croissant.mean():.2f}")
+print(f"Mean of 1000 sample means (n=20): {np.mean(sample_means):.2f}")
+print(f"Standard error of sample means: {np.std(sample_means, ddof=1):.2f}")
+
+print("\n5. WEEKDAY VS WEEKEND COMPARISON")
+daily = df.groupby(["Date", "Weekend"], as_index=False).agg(Total_Units=("Units_Sold", "sum"), Revenue=("Revenue", "sum"))
+weekday_sales = daily.loc[daily["Weekend"] == 0, "Total_Units"]
+weekend_sales = daily.loc[daily["Weekend"] == 1, "Total_Units"]
+t_stat, p_value = stats.ttest_ind(weekend_sales, weekday_sales, equal_var=False)
+print(f"Average weekday units: {weekday_sales.mean():.2f}")
+print(f"Average weekend units: {weekend_sales.mean():.2f}")
+print(f"Welch t-test: t={t_stat:.3f}, p-value={p_value:.5f}")
+print("Result:", "Significant difference" if p_value < 0.05 else "No statistically significant difference")
+
+print("\n6. PROMOTION CAMPAIGN ANALYSIS")
+promo_sales = df.loc[df["Promotion"] == 1, "Units_Sold"]
+regular_sales = df.loc[df["Promotion"] == 0, "Units_Sold"]
+promo_t, promo_p = stats.ttest_ind(promo_sales, regular_sales, equal_var=False)
+uplift = (promo_sales.mean() - regular_sales.mean()) / regular_sales.mean() * 100
+print(f"Average units on promotion: {promo_sales.mean():.2f}")
+print(f"Average units without promotion: {regular_sales.mean():.2f}")
+print(f"Estimated sales uplift: {uplift:.2f}%")
+print(f"Welch t-test: t={promo_t:.3f}, p-value={promo_p:.5f}")
+print("Result:", "Promotion difference is statistically significant" if promo_p < 0.05 else "Promotion difference is not statistically significant")
+
+print("\n7. REVENUE SUMMARY")
+print(f"Total revenue: Rs. {df['Revenue'].sum():,.2f}")
+print(f"Average daily revenue: Rs. {daily['Revenue'].mean():,.2f}")
+print(f"Highest daily revenue: Rs. {daily['Revenue'].max():,.2f}")
+
+print("\n8. REGRESSION AND 7-DAY FORECAST")
+daily_features = df.groupby("Date").agg(
+    Total_Units=("Units_Sold", "sum"),
+    Revenue=("Revenue", "sum"),
+    Weekend=("Weekend", "max"),
+    Promotion=("Promotion", "max")
+).reset_index()
+daily_features["Day_Index"] = np.arange(len(daily_features))
+X = daily_features[["Day_Index", "Weekend", "Promotion"]]
+y = daily_features["Revenue"]
+split = int(len(daily_features) * 0.8)
+model = LinearRegression()
+model.fit(X.iloc[:split], y.iloc[:split])
+test_pred = model.predict(X.iloc[split:])
+print(f"Test MAE: Rs. {mean_absolute_error(y.iloc[split:], test_pred):.2f}")
+print(f"Test RMSE: Rs. {np.sqrt(mean_squared_error(y.iloc[split:], test_pred)):.2f}")
+print(f"Test R-squared: {r2_score(y.iloc[split:], test_pred):.3f}")
+future_dates = pd.date_range(dates[-1] + pd.Timedelta(days=1), periods=7, freq="D")
+future = pd.DataFrame({
+    "Day_Index": np.arange(len(daily_features), len(daily_features) + 7),
+    "Weekend": [int(d.dayofweek >= 5) for d in future_dates],
+    "Promotion": [0, 0, 0, 0, 0, 0, 0]
+})
+future["Forecast_Revenue"] = np.maximum(0, model.predict(future[["Day_Index", "Weekend", "Promotion"]])).round(2)
+future.insert(0, "Date", future_dates.date)
+print(future.to_string(index=False))
+
+print("\n9. INVENTORY PLANNING")
+inventory = df.groupby("Product").agg(
+    Average_Sales=("Units_Sold", "mean"),
+    Sales_Std=("Units_Sold", "std"),
+    Average_Prepared=("Units_Prepared", "mean"),
+    Average_Waste=("Units_Wasted", "mean")
+)
+inventory["Suggested_Preparation"] = np.ceil(inventory["Average_Sales"] + 1.28 * inventory["Sales_Std"]).astype(int)
+inventory["Average_Waste_Rate_%"] = (inventory["Average_Waste"] / inventory["Average_Prepared"] * 100).round(2)
+print(inventory.round(2).to_string())
+
+print("\n10. PRODUCT QUALITY / WASTAGE INDICATORS")
+quality = df.groupby("Product").agg(
+    Prepared=("Units_Prepared", "sum"),
+    Sold=("Units_Sold", "sum"),
+    Wasted=("Units_Wasted", "sum")
+)
+quality["Sell_Through_%"] = (quality["Sold"] / quality["Prepared"] * 100).round(2)
+quality["Waste_%"] = (quality["Wasted"] / quality["Prepared"] * 100).round(2)
+print(quality.to_string())
+
+fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+for product in products:
+    subset = df[df["Product"] == product].groupby("Date")["Units_Sold"].sum()
+    axes[0, 0].plot(subset.index, subset.values, label=product)
+axes[0, 0].set_title("Daily Units Sold by Product")
+axes[0, 0].set_xlabel("Date")
+axes[0, 0].set_ylabel("Units Sold")
+axes[0, 0].legend()
+
+daily.groupby("Weekend")["Total_Units"].mean().rename({0: "Weekday", 1: "Weekend"}).plot(kind="bar", ax=axes[0, 1])
+axes[0, 1].set_title("Average Sales: Weekday vs Weekend")
+axes[0, 1].set_ylabel("Units")
+
+df.groupby("Product")["Units_Wasted"].mean().plot(kind="bar", ax=axes[1, 0])
+axes[1, 0].set_title("Average Daily Wastage by Product")
+axes[1, 0].set_ylabel("Units Wasted")
+
+axes[1, 1].plot(daily_features["Date"], daily_features["Revenue"], label="Actual revenue")
+axes[1, 1].plot(future_dates, future["Forecast_Revenue"], marker="o", label="Forecast revenue")
+axes[1, 1].set_title("Revenue Forecast")
+axes[1, 1].set_ylabel("Revenue (Rs.)")
+axes[1, 1].legend()
+
+plt.tight_layout()
+plt.savefig("bakery_analysis_dashboard.png", dpi=160)
+plt.show()
+
+print("\nFiles created: bakery_sales_data.csv, bakery_analysis_dashboard.png")
